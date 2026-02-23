@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FlowForge · smart backlog & toast</title>
+    <!-- Tailwind + Font Awesome 6 (free) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <!-- Alpine.js for reactivity -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <style>
+        body { background: linear-gradient(145deg, #f8fafc 0%, #f1f5f9 100%); }
+        .checkbox-custom { accent-color: #2563eb; width: 1.1rem; height: 1.1rem; cursor: pointer; }
+        [x-cloak] { display: none !important; }
+        /* top center toast container + animations */
+        .toast-container {
+            position: fixed;
+            top: 1.5rem;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.5rem;
+            pointer-events: none;
+            width: auto;
+            max-width: 90%;
+        }
+        .toast {
+            pointer-events: auto;
+            background: white;
+            border-radius: 9999px; /* pill shape */
+            box-shadow: 0 10px 25px -5px rgba(0,0,0,0.1), 0 8px 10px -6px rgba(0,0,0,0.02);
+            padding: 0.75rem 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            font-size: 0.95rem;
+            font-weight: 500;
+            border-left: 4px solid;
+            transform: translateY(-20px);
+            opacity: 0;
+            transition: transform 0.25s ease, opacity 0.25s ease;
+            backdrop-filter: blur(4px);
+            background: rgba(255, 255, 255, 0.95);
+        }
+        .toast.show {
+            transform: translateY(0);
+            opacity: 1;
+        }
+        .toast.success { border-left-color: #10b981; }
+        .toast.warning { border-left-color: #f59e0b; }
+        .toast.info { border-left-color: #3b82f6; }
+        .toast i { font-size: 1.2rem; }
+    </style>
+</head>
+<body class="antialiased font-sans p-5 md:p-7 text-slate-700" 
+      x-data="timetableApp" 
+      x-init="init(); $watch('weekDays', () => { updateStats(); checkUnfinishedDays(); }); $watch('backlogItems', () => updateStats())" 
+      x-cloak>
+    
+    <!-- TOP CENTER TOAST CONTAINER (beautiful pill toasts) -->
+    <div class="toast-container">
+        <template x-for="(toast, idx) in toasts" :key="toast.id">
+            <div class="toast" :class="[toast.type, toast.show ? 'show' : '']" 
+                 x-init="setTimeout(() => toast.show = true, 10); setTimeout(() => { toast.show = false; setTimeout(() => removeToast(toast.id), 300); }, 3800)">
+                <i :class="toast.icon" class="fa-regular"></i>
+                <span x-text="toast.message"></span>
+            </div>
+        </template>
+    </div>
+
+    <div class="max-w-7xl mx-auto relative">
+        <!-- header with live stats -->
+        <div class="flex flex-wrap items-center justify-between gap-4 mb-7">
+            <div class="flex items-center gap-3">
+                <div class="h-10 w-10 bg-blue-600 rounded-2xl flex items-center justify-center shadow-md shadow-blue-200">
+                    <i class="fa-regular fa-calendar-check text-white text-xl"></i>
+                </div>
+                <h1 class="text-3xl md:text-4xl font-light tracking-tight text-slate-800">week <span class="font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-800 to-indigo-700">plan</span></h1>
+                <div class="ml-3 bg-amber-50 border border-amber-200 rounded-full px-4 py-1.5 text-sm flex items-center gap-2 shadow-sm cursor-help" 
+                     @click="showToast('📋 backlog: ' + backlogItems.filter(b => !b.completed).length + ' items', 'info', 'fa-circle-info')">
+                    <i class="fa-solid fa-list-check text-amber-600"></i>
+                    <span class="font-medium text-amber-800">backlog · <span x-text="backlogItems.filter(b => !b.completed).length"></span> items</span>
+                </div>
+            </div>
+            <div class="flex gap-2">
+                <div class="bg-white/70 backdrop-blur-sm rounded-2xl px-5 py-2.5 flex items-center gap-3 shadow-sm border border-white">
+                    <div class="flex items-center gap-1.5">
+                        <i class="fa-regular fa-circle-check text-emerald-600"></i>
+                        <span class="text-sm font-medium"><span x-text="completedDaysCount"></span>/<span x-text="weekDays.length"></span> done</span>
+                    </div>
+                    <div class="w-px h-6 bg-slate-200"></div>
+                    <div class="flex items-center gap-1.5">
+                        <i class="fa-regular fa-clock text-indigo-500"></i>
+                        <span class="text-sm font-medium">focus <span x-text="totalFocusHours"></span>h</span>
+                    </div>
+                </div>
+                <button class="bg-white hover:bg-blue-50 border border-slate-200 rounded-2xl px-4 py-2.5 text-sm font-medium flex items-center gap-2 transition" @click="resetWeek()"><i class="fa-regular fa-rotate-right text-blue-600"></i> reset</button>
+            </div>
+        </div>
+
+        <!-- main timetable with per-day backlog & resolve -->
+        <div class="bg-white/80 backdrop-blur-sm rounded-3xl shadow-xl border border-white/80 overflow-hidden mb-8">
+            <div class="overflow-x-auto pb-2 custom-scroll">
+                <table class="w-full text-sm border-collapse min-w-[1000px] lg:min-w-full">
+                    <thead>
+                        <tr class="bg-gradient-to-r from-slate-50 to-indigo-50/50 border-b border-slate-200">
+                            <th class="text-left py-5 pl-6 font-semibold text-slate-600"><i class="fa-regular fa-sun text-amber-400 mr-1"></i> DAY</th>
+                            <th class="text-left py-5 px-4 font-semibold text-slate-600">9:30 – 1:30</th>
+                            <th class="text-left py-5 px-4 font-semibold text-slate-600">2:30 – 5:30</th>
+                            <th class="text-left py-5 px-4 font-semibold text-slate-600">6:30 – 8:00</th>
+                            <th class="text-left py-5 px-4 font-semibold text-indigo-700 bg-indigo-50/40">9:30 – 12:00 night</th>
+                            <th class="text-center py-5 px-3 font-semibold text-slate-600"><i class="fa-regular fa-flag mr-1"></i> week</th>
+                            <th class="text-center py-5 px-3 font-semibold text-slate-600"><i class="fa-regular fa-rectangle-list mr-1"></i> backlog</th>
+                            <th class="text-center py-5 px-3 font-semibold text-slate-600"><i class="fa-regular fa-check-circle mr-1"></i> resolve</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100">
+                        <template x-for="(day, index) in weekDays" :key="day.name">
+                            <tr class="group hover:bg-white/70 transition" :class="{ 'bg-emerald-50/20': day.completed }">
+                                <td class="pl-6 py-4 font-medium text-slate-700 whitespace-nowrap" x-text="day.name"></td>
+                                <td class="px-4 py-4" x-text="day.slots[0]"></td>
+                                <td class="px-4 py-4" x-text="day.slots[1]"></td>
+                                <td class="px-4 py-4" x-text="day.slots[2]"></td>
+                                <td class="px-4 py-4 bg-indigo-50/30 font-medium" x-text="day.slots[3]"></td>
+                                <!-- completed checkbox -->
+                                <td class="text-center px-3 py-4">
+                                    <input type="checkbox" class="checkbox-custom" x-model="day.completed" @change="onDayCheckChange(day, index)">
+                                </td>
+                                <!-- backlog count for the day (only pending) -->
+                                <td class="text-center px-3 py-4">
+                                    <template x-if="getBacklogForDay(day.name).length > 0">
+                                        <span class="inline-flex items-center gap-1 text-amber-600 font-medium text-xs bg-amber-50 px-2 py-1 rounded-full">
+                                            <i class="fa-regular fa-clock"></i> <span x-text="getBacklogForDay(day.name).length"></span> task<span x-show="getBacklogForDay(day.name).length>1">s</span>
+                                        </span>
+                                    </template>
+                                    <template x-if="getBacklogForDay(day.name).length === 0">
+                                        <span class="text-slate-300 text-xs">—</span>
+                                    </template>
+                                </td>
+                                <!-- resolve button (clears backlog for that day) -->
+                                <td class="text-center px-3 py-4">
+                                    <template x-if="getBacklogForDay(day.name).length > 0">
+                                        <button @click="resolveDayBacklog(day.name)" class="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 px-2 py-1 rounded-full transition flex items-center gap-1 mx-auto">
+                                            <i class="fa-regular fa-check-circle"></i> resolve
+                                        </button>
+                                    </template>
+                                    <template x-if="getBacklogForDay(day.name).length === 0">
+                                        <span class="text-slate-200 text-xs"><i class="fa-regular fa-circle-check"></i> clear</span>
+                                    </template>
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+            <div class="border-t border-slate-100 p-5 flex flex-wrap items-center gap-5 text-xs text-slate-500 bg-white/50">
+                <div class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-blue-600"></span> <span class="font-medium">auto‑backlog:</span> if you don't check a day, its tasks move to next day</div>
+                <div class="flex items-center gap-2"><i class="fa-regular fa-clock text-amber-500"></i> click resolve to clear day's backlog</div>
+                <div class="flex-1 text-right italic"><span x-text="new Date().toLocaleDateString('en-us', { weekday:'long', month:'short', day:'numeric' })"></span></div>
+            </div>
+        </div>
+
+        <!-- live backlog manager + day-by-day missing -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+            <!-- interactive backlog card: grouped by day -->
+            <div class="bg-white/70 backdrop-blur-sm rounded-2xl p-5 border border-white/80 shadow-sm">
+                <div class="flex items-center gap-2 mb-4">
+                    <div class="bg-amber-100 w-8 h-8 rounded-xl flex items-center justify-center"><i class="fa-regular fa-file-lines text-amber-700"></i></div>
+                    <h2 class="font-semibold text-slate-800 text-lg">week backlog</h2>
+                    <span class="ml-auto bg-amber-50 text-amber-600 text-xs font-medium px-2.5 py-1 rounded-full" x-text="`${backlogItems.filter(b=>!b.completed).length} pending`"></span>
+                </div>
+                <!-- group by day (only days with pending) -->
+                <div class="space-y-3 max-h-60 overflow-y-auto pr-1 text-sm">
+                    <template x-for="dayName in ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']" :key="dayName">
+                        <template x-if="getBacklogForDay(dayName).length > 0">
+                            <div class="border border-slate-100 rounded-xl p-2 bg-white/50">
+                                <div class="flex items-center justify-between text-xs font-medium text-slate-500 mb-1">
+                                    <span><i class="fa-regular fa-calendar mr-1"></i> <span x-text="dayName"></span> (<span x-text="getBacklogForDay(dayName).length"></span>)</span>
+                                    <button @click="resolveDayBacklog(dayName)" class="text-emerald-600 hover:text-emerald-800 text-xs"><i class="fa-regular fa-circle-check"></i> resolve all</button>
+                                </div>
+                                <ul class="space-y-1">
+                                    <template x-for="(item, idx) in backlogItems.filter(b => b.day === dayName && !b.completed)" :key="item.id">
+                                        <li class="flex items-center justify-between gap-1 text-xs group">
+                                            <div class="flex items-center gap-2">
+                                                <input type="checkbox" class="checkbox-custom" x-model="item.completed" @change="if(item.completed) showToast('✅ task done: ' + item.text, 'success', 'fa-circle-check')">
+                                                <span class="text-slate-700" x-text="item.text.length > 30 ? item.text.slice(0,27)+'…' : item.text"></span>
+                                            </div>
+                                            <button class="text-slate-400 hover:text-red-500" @click="removeBacklogItemById(item.id)"><i class="fa-regular fa-trash-can text-xs"></i></button>
+                                        </li>
+                                    </template>
+                                </ul>
+                            </div>
+                        </template>
+                    </template>
+                    <template x-if="backlogItems.filter(b => !b.completed).length === 0">
+                        <div class="text-slate-400 italic text-center py-4">✨ no pending backlog · all clear!</div>
+                    </template>
+                </div>
+
+                <!-- add new backlog (with day selector) -->
+                <div class="mt-5 flex gap-2">
+                    <input type="text" placeholder="e.g., finish graphs" x-model="newBacklogText" @keyup.enter="addBacklogItem" class="w-full text-sm border border-slate-200 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-200">
+                    <select x-model="newBacklogDay" class="text-sm border border-slate-200 rounded-xl px-2 py-2 bg-white">
+                        <option value="Monday">Mon</option><option value="Tuesday">Tue</option><option value="Wednesday">Wed</option>
+                        <option value="Thursday">Thu</option><option value="Friday">Fri</option><option value="Saturday">Sat</option><option value="Sunday">Sun</option>
+                    </select>
+                    <button @click="addBacklogItem" class="bg-blue-50 hover:bg-blue-100 text-blue-700 px-3 py-2 rounded-xl"><i class="fa-regular fa-plus"></i></button>
+                </div>
+                <!-- clear completed button -->
+                <div class="mt-3 flex justify-between">
+                    <button @click="clearCompletedBacklog" class="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1"><i class="fa-regular fa-trash-can"></i> clear completed</button>
+                    <button @click="runAutoBacklogCheck" class="text-xs text-indigo-400 hover:text-indigo-600 flex items-center gap-1"><i class="fa-regular fa-forward"></i> shift unfinished</button>
+                </div>
+            </div>
+
+            <!-- live insights with missing tasks & day by day view -->
+            <div class="bg-white/70 backdrop-blur-sm rounded-2xl p-5 border border-white/80 shadow-sm lg:col-span-2">
+                <div class="flex items-center gap-2 mb-3">
+                    <div class="bg-indigo-100 w-8 h-8 rounded-xl flex items-center justify-center"><i class="fa-regular fa-chart-line text-indigo-700"></i></div>
+                    <h2 class="font-semibold text-slate-800 text-lg">live insights · what's missing?</h2>
+                </div>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
+                    <!-- subject hours (real-time) -->
+                    <div class="bg-white rounded-xl p-3 border border-slate-100">
+                        <div class="text-xs text-slate-500">DSA practice</div>
+                        <div class="text-lg font-semibold"><span x-text="dsaCompletedHours"></span>/12 <span class="text-xs text-emerald-600">hrs</span></div>
+                        <div class="w-full bg-slate-100 h-1.5 rounded-full mt-1"><div class="bg-blue-500 h-1.5 rounded-full" :style="'width:' + (dsaCompletedHours/12*100) + '%'"></div></div>
+                    </div>
+                    <div class="bg-white rounded-xl p-3 border border-slate-100">
+                        <div class="text-xs text-slate-500">System Design</div>
+                        <div class="text-lg font-semibold"><span x-text="sdCompletedHours"></span>/8 <span class="text-xs text-amber-600">hrs</span></div>
+                        <div class="w-full bg-slate-100 h-1.5 rounded-full mt-1"><div class="bg-indigo-400 h-1.5 rounded-full" :style="'width:' + (sdCompletedHours/8*100) + '%'"></div></div>
+                    </div>
+                    <div class="bg-white rounded-xl p-3 border border-slate-100">
+                        <div class="text-xs text-slate-500">Project</div>
+                        <div class="text-lg font-semibold"><span x-text="projectCompletedHours"></span>/9 <span class="text-xs text-emerald-600">hrs</span></div>
+                        <div class="w-full bg-slate-100 h-1.5 rounded-full mt-1"><div class="bg-sky-500 h-1.5 rounded-full" :style="'width:' + (projectCompletedHours/9*100) + '%'"></div></div>
+                    </div>
+                    <div class="bg-white rounded-xl p-3 border border-slate-100">
+                        <div class="text-xs text-slate-500">Core/MySQL</div>
+                        <div class="text-lg font-semibold"><span x-text="coreCompletedHours"></span>/10 <span class="text-xs text-emerald-600">hrs</span></div>
+                        <div class="w-full bg-slate-100 h-1.5 rounded-full mt-1"><div class="bg-purple-500 h-1.5 rounded-full" :style="'width:' + (coreCompletedHours/10*100) + '%'"></div></div>
+                    </div>
+                </div>
+
+                <!-- dynamic missing message + per-day missing tiles (with icons) -->
+                <div class="mt-5 space-y-3">
+                    <div class="flex items-center gap-4 text-sm bg-slate-50 p-3 rounded-xl">
+                        <i class="fa-regular fa-lightbulb text-amber-500 text-xl"></i>
+                        <span class="text-slate-600" x-html="suggestionMessage"></span>
+                        <button class="ml-auto text-xs bg-white border border-slate-200 px-3 py-1.5 rounded-full shadow-sm hover:bg-slate-50" @click="quickFixSuggestion">➕ quick add</button>
+                    </div>
+                    
+                    <!-- day-by-day missing beautiful cards -->
+                    <div class="text-sm bg-white p-4 rounded-xl border border-slate-100">
+                        <div class="flex items-center gap-2 mb-3 text-xs font-medium text-slate-500"><i class="fa-regular fa-rectangle-list"></i> DAY-BY-DAY BACKLOG (unfinished tasks move → next day)</div>
+                        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                            <template x-for="(dayName, i) in ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']" :key="dayName">
+                                <div class="text-xs bg-slate-50 p-2 rounded-lg flex items-center justify-between"
+                                     :class="{'ring-2 ring-amber-200': getBacklogForDay(dayName).length > 0}">
+                                    <span class="font-medium flex items-center gap-1">
+                                        <i class="fa-regular fa-calendar text-slate-400"></i> <span x-text="dayName.slice(0,3)"></span>
+                                    </span>
+                                    <template x-if="getBacklogForDay(dayName).length > 0">
+                                        <span class="bg-amber-100 text-amber-700 text-xs px-2 py-0.5 rounded-full flex items-center gap-1">
+                                            <i class="fa-regular fa-clock"></i> <span x-text="getBacklogForDay(dayName).length"></span>
+                                        </span>
+                                    </template>
+                                    <template x-if="getBacklogForDay(dayName).length === 0">
+                                        <span class="text-emerald-600 text-xs"><i class="fa-regular fa-circle-check"></i> clear</span>
+                                    </template>
+                                </div>
+                            </template>
+                        </div>
+                        <div class="mt-3 text-xs text-slate-400 italic flex items-center gap-1">
+                            <i class="fa-regular fa-arrow-right-arrow-left"></i> unfinished tasks auto‑shift at end of day (click "shift unfinished")
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- footer -->
+        <div class="flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400 border-t border-slate-200 pt-5 mt-2">
+            <div class="flex gap-4">
+                <span><i class="fa-regular fa-circle-check mr-1 text-emerald-400"></i> completed days: <span x-text="completedDaysCount"></span>/7</span>
+                <span><i class="fa-regular fa-bookmark mr-1"></i> backlog pending: <span x-text="backlogItems.filter(b => !b.completed).length"></span></span>
+                <span><i class="fa-regular fa-clock mr-1"></i> night sessions: <span x-text="completedDaysCount"></span></span>
+            </div>
+            <div class="flex gap-2">
+                <i class="fa-regular fa-bell text-lg"></i>
+                <span>auto‑backlog · top center toasts</span>
+            </div>
+        </div>
+    </div>
+
+    <style>.custom-scroll::-webkit-scrollbar { height: 6px; background: #eef2f6; border-radius: 10px; } .custom-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }</style>
+
+    <script>
+        document.addEventListener('alpine:init', () => {
+            Alpine.data('timetableApp', () => ({
+                // reactive state
+                weekDays: [],
+                backlogItems: [],
+                newBacklogText: '',
+                newBacklogDay: 'Monday',
+                toasts: [],
+                nextToastId: 0,
+
+                init() {
+                    const saved = localStorage.getItem('flowforge_week');
+                    if (saved) {
+                        const data = JSON.parse(saved);
+                        this.weekDays = data.weekDays;
+                        this.backlogItems = data.backlogItems.map((item, index) => ({ ...item, id: item.id || index + 1000 + Math.random() }));
+                    } else {
+                        // default timetable
+                        this.weekDays = [
+                            { name: 'Monday', slots: ['DSA', 'DSA / System Design', 'Revision', 'Revision / Practice'], completed: false },
+                            { name: 'Tuesday', slots: ['DSA', 'DSA / System Design', 'Revision', 'Revision / Practice'], completed: false },
+                            { name: 'Wednesday', slots: ['DSA', 'DSA / System Design', 'Revision', 'Revision / Practice'], completed: false },
+                            { name: 'Thursday', slots: ['DSA', 'DSA / System Design', 'Revision', 'Revision / Practice'], completed: false },
+                            { name: 'Friday', slots: ['DSA', 'Project', 'Project', 'Project'], completed: false },
+                            { name: 'Saturday', slots: ['DSA', 'Core Subject', 'Core Subject', 'Core Subject'], completed: false },
+                            { name: 'Sunday', slots: ['DSA', 'MySQL', 'MySQL', 'MySQL'], completed: false }
+                        ];
+                        this.backlogItems = [
+                            { id: 1, text: 'Revise DP & graphs (DSA)', day: 'Monday', completed: false },
+                            { id: 2, text: 'System Design: load balancer', day: 'Wednesday', completed: false },
+                            { id: 3, text: 'MySQL indexing optimization', day: 'Sunday', completed: false }
+                        ];
+                    }
+                    this.updateStats();
+                },
+
+                // --- BEAUTIFUL TOP CENTER TOAST ---
+                showToast(message, type = 'info', icon = 'fa-circle-info') {
+                    const id = this.nextToastId++;
+                    this.toasts.push({ id, message, type, icon: `fa-regular ${icon}`, show: false });
+                    setTimeout(() => {
+                        const toast = this.toasts.find(t => t.id === id);
+                        if (toast) toast.show = false;
+                        setTimeout(() => this.removeToast(id), 300);
+                    }, 4000);
+                },
+                removeToast(id) {
+                    this.toasts = this.toasts.filter(t => t.id !== id);
+                },
+
+                persist() {
+                    localStorage.setItem('flowforge_week', JSON.stringify({
+                        weekDays: this.weekDays,
+                        backlogItems: this.backlogItems.map(({id, text, day, completed}) => ({id, text, day, completed}))
+                    }));
+                },
+
+                updateStats() {
+                    this.persist();
+                },
+
+                getBacklogForDay(dayName) {
+                    return this.backlogItems.filter(item => item.day === dayName && !item.completed);
+                },
+
+                // resolve all pending backlog for a day (with toast)
+                resolveDayBacklog(dayName) {
+                    const toResolve = this.backlogItems.filter(item => item.day === dayName && !item.completed);
+                    if (toResolve.length === 0) {
+                        this.showToast(`✨ ${dayName} already clear!`, 'info', 'fa-circle-info');
+                        return;
+                    }
+                    toResolve.forEach(item => item.completed = true);
+                    this.showToast(`✅ Resolved ${toResolve.length} task(s) for ${dayName}`, 'success', 'fa-circle-check');
+                    this.updateStats();
+                },
+
+                removeBacklogItemById(id) {
+                    const item = this.backlogItems.find(i => i.id === id);
+                    this.backlogItems = this.backlogItems.filter(i => i.id !== id);
+                    if (item) this.showToast(`🗑️ removed: ${item.text}`, 'info', 'fa-trash-can');
+                    this.updateStats();
+                },
+
+                addBacklogItem() {
+                    if (!this.newBacklogText.trim()) return;
+                    const newId = Date.now() + Math.random();
+                    this.backlogItems.push({
+                        id: newId,
+                        text: this.newBacklogText,
+                        day: this.newBacklogDay,
+                        completed: false
+                    });
+                    this.showToast(`➕ added to ${this.newBacklogDay}`, 'success', 'fa-circle-plus');
+                    this.newBacklogText = '';
+                    this.updateStats();
+                },
+
+                clearCompletedBacklog() {
+                    const before = this.backlogItems.length;
+                    this.backlogItems = this.backlogItems.filter(i => !i.completed);
+                    const cleared = before - this.backlogItems.length;
+                    if (cleared > 0) this.showToast(`🧹 cleared ${cleared} completed items`, 'info', 'fa-broom');
+                    this.updateStats();
+                },
+
+                // --- AUTO BACKLOG: shift unfinished tasks from previous day to next day ---
+                runAutoBacklogCheck() {
+                    this.checkUnfinishedDays(true); // true = force shift even if same day? we use manual trigger
+                },
+
+                // core function: for any day that is not completed, move its pending backlog to next day
+                checkUnfinishedDays(showToastNotification = true) {
+                    const todayIndex = new Date().getDay(); // 0 sun, 1 mon ... but we use order
+                    const dayOrder = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+                    // we'll shift from any day that is before today (if not completed) but simpler: for all days not completed and before current system day?
+                    // For demo, we simulate: if day is not completed and it's not today, move its backlog to next day.
+                    // But to be intuitive, we'll create a method that moves backlog from any unchecked day to the next.
+                    let shifted = 0;
+                    for (let i = 0; i < this.weekDays.length - 1; i++) {
+                        const currentDay = this.weekDays[i];
+                        const nextDayName = this.weekDays[i+1].name;
+                        if (!currentDay.completed) {
+                            const pendingForCurrent = this.backlogItems.filter(item => item.day === currentDay.name && !item.completed);
+                            if (pendingForCurrent.length > 0) {
+                                pendingForCurrent.forEach(item => item.day = nextDayName);
+                                shifted += pendingForCurrent.length;
+                            }
+                        }
+                    }
+                    // also handle Sunday -> Monday? loop goes to sat->sun, then we need extra for sun->mon
+                    const sunday = this.weekDays[6];
+                    if (!sunday.completed) {
+                        const pendingSunday = this.backlogItems.filter(item => item.day === 'Sunday' && !item.completed);
+                        if (pendingSunday.length > 0) {
+                            pendingSunday.forEach(item => item.day = 'Monday');
+                            shifted += pendingSunday.length;
+                        }
+                    }
+                    if (shifted > 0 && showToastNotification) {
+                        this.showToast(`🔄 shifted ${shifted} unfinished task(s) to next day`, 'warning', 'fa-forward');
+                    }
+                    this.updateStats();
+                },
+
+                // when a day checkbox changes: if unchecked, we might want to remind? we call shift on specific logic
+                onDayCheckChange(day, index) {
+                    if (!day.completed) {
+                        // if user unchecks a day, maybe move its backlog to next day? We'll run shift
+                        this.checkUnfinishedDays(true);
+                    } else {
+                        // if checked, celebrate
+                        this.showToast(`🎉 ${day.name} completed!`, 'success', 'fa-circle-check');
+                    }
+                    this.updateStats();
+                },
+
+                // computed stats
+                get completedDaysCount() {
+                    return this.weekDays.filter(d => d.completed).length;
+                },
+                get totalFocusHours() {
+                    let hours = 0;
+                    this.weekDays.forEach(day => { if (day.completed) hours += 6; });
+                    hours += this.backlogItems.filter(b => b.completed).length * 1;
+                    return hours;
+                },
+                get dsaCompletedHours() {
+                    let hrs = 0;
+                    this.weekDays.forEach(day => {
+                        if (day.completed) {
+                            if (day.slots[0].includes('DSA')) hrs += 2.5;
+                            if (day.slots[1].includes('DSA')) hrs += 2;
+                        }
+                    });
+                    return Math.round(hrs * 10) / 10;
+                },
+                get sdCompletedHours() {
+                    let hrs = 0;
+                    this.weekDays.forEach(day => {
+                        if (day.completed && (day.name !== 'Friday' && day.name !== 'Saturday' && day.name !== 'Sunday')) {
+                            if (day.slots[1].includes('System Design')) hrs += 2.5;
+                        }
+                    });
+                    return hrs;
+                },
+                get projectCompletedHours() {
+                    let hrs = 0;
+                    this.weekDays.forEach(day => { if (day.completed && day.name === 'Friday') hrs += 8; });
+                    return hrs;
+                },
+                get coreCompletedHours() {
+                    let hrs = 0;
+                    this.weekDays.forEach(day => {
+                        if (day.completed && day.name === 'Saturday') hrs += 7;
+                        if (day.completed && day.name === 'Sunday') hrs += 5;
+                    });
+                    return hrs;
+                },
+
+                get suggestionMessage() {
+                    const incomplete = this.backlogItems.filter(b => !b.completed).length;
+                    if (incomplete > 0) {
+                        return `you have <span class="font-medium">${incomplete} pending</span> backlog item(s). use "resolve" or they'll shift ➡️`;
+                    }
+                    const daysLeft = this.weekDays.filter(d => !d.completed).length;
+                    if (daysLeft > 0) return `<span class="font-medium">${daysLeft} day(s)</span> not marked done — complete them!`;
+                    return '🎉 all done for the week!';
+                },
+
+                quickFixSuggestion() {
+                    this.backlogItems.push({ id: Date.now() + 1, text: 'quick review: graphs', day: 'Monday', completed: false });
+                    this.showToast('➕ added quick review task', 'success', 'fa-circle-plus');
+                    this.updateStats();
+                },
+
+                resetWeek() {
+                    if (confirm('Reset to default? All progress will be lost.')) {
+                        localStorage.removeItem('flowforge_week');
+                        this.weekDays = [
+                            { name: 'Monday', slots: ['DSA', 'DSA / System Design', 'Revision', 'Revision / Practice'], completed: false },
+                            { name: 'Tuesday', slots: ['DSA', 'DSA / System Design', 'Revision', 'Revision / Practice'], completed: false },
+                            { name: 'Wednesday', slots: ['DSA', 'DSA / System Design', 'Revision', 'Revision / Practice'], completed: false },
+                            { name: 'Thursday', slots: ['DSA', 'DSA / System Design', 'Revision', 'Revision / Practice'], completed: false },
+                            { name: 'Friday', slots: ['DSA', 'Project', 'Project', 'Project'], completed: false },
+                            { name: 'Saturday', slots: ['DSA', 'Core Subject', 'Core Subject', 'Core Subject'], completed: false },
+                            { name: 'Sunday', slots: ['DSA', 'MySQL', 'MySQL', 'MySQL'], completed: false }
+                        ];
+                        this.backlogItems = [
+                            { id: 1, text: 'Revise DP & graphs (DSA)', day: 'Monday', completed: false },
+                            { id: 2, text: 'System Design: load balancer', day: 'Wednesday', completed: false },
+                            { id: 3, text: 'MySQL indexing optimization', day: 'Sunday', completed: false }
+                        ];
+                        this.showToast('🔄 reset to default week', 'info', 'fa-rotate-right');
+                        this.updateStats();
+                    }
+                }
+            }))
+        })
+    </script>
+</body>
+</html>
